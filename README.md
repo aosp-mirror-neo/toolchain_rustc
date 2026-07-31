@@ -77,4 +77,3 @@ Third-party logos may be subject to third-party copyrights and trademarks. See
 [rust-foundation]: https://rustfoundation.org/
 [trademark-policy]: https://rustfoundation.org/policy/rust-trademark-policy/
 [policies-licenses]: https://www.rust-lang.org/policies/licenses
-
