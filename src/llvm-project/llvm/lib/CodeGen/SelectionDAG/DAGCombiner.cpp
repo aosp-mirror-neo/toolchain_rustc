@@ -23117,6 +23117,19 @@ static SDValue foldToMaskedStore(StoreSDNode *Store, SelectionDAG &DAG,
   if (LoadPos == 1)
     Mask = DAG.getNOT(Dl, Mask, Mask.getValueType());
 
+  // A masked store follows the IR convention of a vXi1 mask (one bit per
+  // element). A vselect condition may instead be a wider boolean vector, e.g.
+  // a vXi32/vXi64 comparison result produced on AVX512 targets without VLX.
+  // When the matching vXi1 type is legal, narrow the mask to it so that targets
+  // expecting a vXi1 mask lower it correctly. Targets where vXi1 is illegal
+  // (e.g. AVX/AVX2) keep the wide mask and lower it as a blend/vmaskmov.
+  EVT MaskVT = Mask.getValueType();
+  if (MaskVT.getVectorElementType() != MVT::i1) {
+    EVT BoolVT = MaskVT.changeVectorElementType(*DAG.getContext(), MVT::i1);
+    if (TLI.isTypeLegal(BoolVT))
+      Mask = DAG.getNode(ISD::TRUNCATE, Dl, BoolVT, Mask);
+  }
+
   return DAG.getMaskedStore(Store->getChain(), Dl, OtherVec, StorePtr,
                             StoreOffset, Mask, VT, Store->getMemOperand(),
                             Store->getAddressingMode());
@@ -29305,10 +29318,12 @@ bool DAGCombiner::SimplifySelectOps(SDNode *TheSelect, SDValue LHS,
            SDNode::hasPredecessorHelper(RLD, Visited, Worklist)))
         return false;
 
-      Addr = DAG.getSelect(SDLoc(TheSelect),
-                           LLD->getBasePtr().getValueType(),
-                           TheSelect->getOperand(0), LLD->getBasePtr(),
-                           RLD->getBasePtr());
+      // If the condition is poison, originally this would result in a poison
+      // result. After the transform, this would result in a load of poison,
+      // which is UB. Freeze the condition to prevent this.
+      Addr = DAG.getSelect(SDLoc(TheSelect), LLD->getBasePtr().getValueType(),
+                           DAG.getFreeze(TheSelect->getOperand(0)),
+                           LLD->getBasePtr(), RLD->getBasePtr());
     } else {  // Otherwise SELECT_CC
       // We cannot do this optimization if any pair of {RLD, LLD} is a
       // predecessor to {RLD, LLD, CondLHS, CondRHS}. As we've already compared
@@ -29327,10 +29342,10 @@ bool DAGCombiner::SimplifySelectOps(SDNode *TheSelect, SDValue LHS,
            SDNode::hasPredecessorHelper(RLD, Visited, Worklist)))
         return false;
 
+      SDValue FrozenOp0 = DAG.getFreeze(TheSelect->getOperand(0));
+      SDValue FrozenOp1 = DAG.getFreeze(TheSelect->getOperand(1));
       Addr = DAG.getNode(ISD::SELECT_CC, SDLoc(TheSelect),
-                         LLD->getBasePtr().getValueType(),
-                         TheSelect->getOperand(0),
-                         TheSelect->getOperand(1),
+                         LLD->getBasePtr().getValueType(), FrozenOp0, FrozenOp1,
                          LLD->getBasePtr(), RLD->getBasePtr(),
                          TheSelect->getOperand(4));
     }
